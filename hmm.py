@@ -74,13 +74,14 @@ class HMM:
             d = T * .5
             d[0] = T[0]
             d[-1] = T[-1]
-            self.T = np.diag(1 - T) + np.diag(d[:-1], k=1) + np.diag(d[1:], k=-1)
+            self.T = np.diag(1 - T) + \
+                np.diag(d[:-1], k=1) + np.diag(d[1:], k=-1)
         elif T.ndim == 2:
             if not T.shape == (self.N, self.N):
                 raise ValueError("T has to have shape (N, N)")
             if not (T.sum(1) == 1).all():
-                raise ValueError(
-                    "The sum of the elements of each line of T equals 1")
+                raise ValueError("""The sum of the elements of each line of T
+                    has to be equal to 1""")
             self.T = T
         else:
             raise ValueError("Invalid input")
@@ -111,7 +112,8 @@ class HMM:
 
         if param.ndim == 2:
             if param.shape[1] == 2:
-                self.param = param[:, 0][:, _] + np.arange(self.N)[_, :] / (self.N - 1.0) * \
+                self.param = param[:, 0][:, _] + \
+                    np.arange(self.N)[_, :] / (self.N - 1.0) * \
                     (param[:, 1] - param[:, 0])[:, _]
             elif param.shape[1] == self.N:
                 self.param = param
@@ -206,8 +208,7 @@ class HMM:
         Returns
         -------
         out : boolean
-            Returns True if the algorithm converges, otherwise returns
-            False.        
+            Returns True if the algorithm converges, otherwise returns False.
         """
         self.obs = np.append(self.obs, new_obs)
         return self.run()
@@ -229,7 +230,7 @@ class HMM_normal(HMM):
         HMM.step(self)
         self.param[0][~self.coerc[0]] = (
             (self.gamma * self.obs[_, :]).sum(-1) /
-             self.gamma.sum(-1))[~self.coerc[0]]
+            self.gamma.sum(-1))[~self.coerc[0]]
         self.param[1][~self.coerc[1]] = np.sqrt(
             (self.gamma *
              (self.obs[_, :] - self.param[0][:, _]) *
@@ -240,7 +241,7 @@ class HMM_normal(HMM):
 class HMM_bernoulli(HMM):
     def __init__(self, N):
         HMM.__init__(self, N)
-        self.set_param(np.sort(np.random.rand(self.N)))
+        self.set_param([.33, .66])
 
     def _func(self, obs, param):
         p = param[0]
@@ -250,7 +251,7 @@ class HMM_bernoulli(HMM):
         HMM.step(self)
         self.param[0][~self.coerc[0]] = (
             (self.gamma * self.obs[_, :]).sum(-1) /
-             self.gamma.sum(-1))[~self.coerc[0]]
+            self.gamma.sum(-1))[~self.coerc[0]]
 
 
 class HMM_exponential(HMM):
@@ -267,6 +268,41 @@ class HMM_exponential(HMM):
             (self.gamma * self.obs[_, :]).sum(-1)[~self.coerc[0]]
 
 
+class HMM_laplace(HMM):
+    def __init__(self, N):
+        HMM.__init__(self, N)
+        self.set_param(np.array([1, -1]) * 0.0001, np.array([.01, .05]))
+
+    def _func(self, obs, param):
+        # f(x) = 1/2b * exp(-|x-u|/b)
+        # b = stddev / sqrt(2)
+        return np.exp(
+            -np.abs((obs[_, :] - param[0][:, _]) / param[1][:, _])) / \
+            (2 * param[1][:, _])
+
+    def step(self):
+        HMM.step(self)
+
+        # compute u - calculate the weighted median for each gamma
+        cum_weight = self.gamma[:, self.obs.argsort()].cumsum(1)
+        idx1 = np.argmax((cum_weight / cum_weight[:, -1][:, _]) >= .5, 1)
+        idx0 = np.maximum(idx1 - 1, 0)
+        w1 = cum_weight[:, idx1]
+        w0 = cum_weight[:, idx0]
+        w = (w1 - .5) / (w1 - w0)
+        # cleaning out fraction where the idx1 is zero
+        # impling that w will be undefined
+        w[idx1 == 0] = 0
+        u1 = (np.sort(self.obs)[:, _])[:, idx1]
+        u0 = (np.sort(self.obs)[:, _])[:, idx0]
+        self.param[0] = w * u0 + (1 - w) * u1
+
+        # compute b
+        self.param[1] = \
+            (self.gamma * np.abs(self.obs[_, :] -
+             self.param[0][:, _])).sum(-1) / self.gamma.sum(-1)
+
+
 def model(states, kind='Normal'):
     """
     Returns an Hidden Markov Model object
@@ -275,19 +311,21 @@ def model(states, kind='Normal'):
     ----------
     states : int
         The number of states of the Hidden Markov Model
-    kind : {'Normal', 'Bernoulli', 'Exponential'}, optional
+    kind : {'Normal', 'Bernoulli', 'Exponential', 'Laplace'}, optional
         The familly of probability distributions for each state
 
     Returns
     -------
-    out : HMM object 
+    out : HMM object
     """
     kind = kind.lower()
-    if kind in ['normal','gaussian']:
+    if kind in ['normal', 'gaussian']:
         return HMM_normal(states)
     elif kind in ['bernoulli']:
         return HMM_bernoulli(states)
     elif kind in ['exp', 'exponential']:
         return HMM_exponential(states)
+    elif kind in ['laplace']:
+        return HMM_laplace(states)
     else:
         raise ValueError
